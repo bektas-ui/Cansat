@@ -73,12 +73,9 @@ tag_size_m = 0.168  # real tag side length in meters
 # Manual calibration data from known distances and actual measurements
 # All calibration data extracted from reference images
 calibration_data = [
-    (195.0, 0.80),   # gab80cm.jpg: 195.0px at 0.80m
-    (118.9, 1.30),   # gab130cm.jpg: 118.9px at 1.30m
-    (85.5, 1.80),    # gab180cm.jpg: 85.5px at 1.80m
-    (78.4, 2.00),    # BOMA1.jpg: 78.4px at 2.00m (straight-on, accurate)
-    (40.1, 3.80),    # gab380cm.jpg: 40.1px at 3.80m
-    (34.0, 4.50),    # gab450cm.jpg: 34.0px at 4.50m
+    (267.1, 6.00),   # 6 meter nieuwe lens.jpg: 267.1px at 6.00m
+    (242.0, 6.50),     # 6.5 meter nieuwe lens.jpg: 242px at 6.50m
+    (224.0, 7.00),     # 7 meter nieuwe lens.jpg: 224px at 7.00m
 ]
 
 # Create calibration curve using the actual measurement data
@@ -89,14 +86,17 @@ distances = np.array([d[1] for d in calibration_data])
 k_values = pixel_sizes * distances
 k = np.mean(k_values)
 
-print(f"Calibration using extracted reference data:")
-print(f"  0.80m: 195.0px => k = {195.0 * 0.80:.1f}")
-print(f"  1.30m: 118.9px => k = {118.9 * 1.30:.1f}")
-print(f"  1.80m:  85.5px => k = {85.5 * 1.80:.1f}")
-print(f"  2.00m:  78.4px => k = {78.4 * 2.00:.1f} (BOMA1 - straight-on)")
-print(f"  3.80m:  40.1px => k = {40.1 * 3.80:.1f}")
-print(f"  4.50m:  34.0px => k = {34.0 * 4.50:.1f}")
+print(f"Calibration using new lens reference data:")
+for px, dist in calibration_data:
+    print(f"  {dist:.2f}m: {px:.1f}px => k = {px * dist:.1f}")
 print(f"  Average calibration constant k: {k:.1f}")
+
+print("\nCalibration verification:")
+for px, actual_dist in calibration_data:
+    calc_dist = k / px
+    error_m = calc_dist - actual_dist
+    error_pct = (error_m / actual_dist) * 100
+    print(f"    {actual_dist:.2f}m: {calc_dist:.2f}m (error: {error_m:+.2f}m, {error_pct:+.1f}%)")
 
 objp = np.array([[-tag_size_m/2, -tag_size_m/2, 0],
                  [ tag_size_m/2, -tag_size_m/2, 0],
@@ -126,8 +126,19 @@ for img_path in image_files:
     
     results = detector.detect(img)
     print(f"  Detected {len(results)} tag(s)")
-    
+
+    unique_results = []
+    seen_ids = set()
     for r in results:
+        if r.tag_id in seen_ids:
+            print(f"    Skipping duplicate detection of ID {r.tag_id}")
+            continue
+        seen_ids.add(r.tag_id)
+        unique_results.append(r)
+
+    print(f"  Using {len(unique_results)} unique tag(s) after deduplication")
+
+    for r in unique_results:
         corners = np.array(r.corners, dtype=float)
         
         # Calculate all 4 sides for angle detection
@@ -164,7 +175,7 @@ for img_path in image_files:
         print(f"      Distance to tag plane: {distance_m:.3f}m")
         print(f"      Distance (camera center to tag center):")
         print(f"        - 2D pixel distance: {dist_px:.1f}px")
-        print(f"        - 3D world distance (Pythagorean): {actual_distance_m:.3f}m")
+        print(f"        - 3D world distance: {actual_distance_m:.3f}m")
         print(f"        - Horizontal offset: {off_x_px:.1f}px ({off_x_m:.3f}m)")
         print(f"        - Vertical offset: {off_y_px:.1f}px ({off_y_m:.3f}m)")
         print(f"      Pixel sizes: Top={side1:.1f}, Right={side2:.1f}, Bottom={side3:.1f}, Left={side4:.1f}px")
@@ -188,14 +199,14 @@ for img_path in image_files:
     
     # Display the image with overlays (resized for better viewing) with properly scaled coordinates
     original_h, original_w = img_color.shape[:2]
-    display_size = (300, 225)
+    display_size = (1200, 900)
     scale_x = display_size[0] / original_w
     scale_y = display_size[1] / original_h
     
     display_img = cv2.resize(img_color, display_size)
     
     # Redraw everything with scaled coordinates on the resized image
-    for r in results:
+    for r in unique_results:
         corners = np.array(r.corners, dtype=float)
         
         # Calculate all 4 sides for angle detection
@@ -248,7 +259,7 @@ for img_path in image_files:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
         cv2.putText(display_img, f"Size: {max_side:.0f}px (16.8cm)", tuple(center_int + np.array([10, 35])),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(display_img, f"Center dist (Pythagoras): {actual_distance_m:.3f}m ({dist_px:.0f}px)", 
+        cv2.putText(display_img, f"Center dist: {actual_distance_m:.3f}m ({dist_px:.0f}px)", 
                    tuple(center_int + np.array([10, 55])),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 0), 2)
     
