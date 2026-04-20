@@ -68,40 +68,37 @@ print(f"Found {len(image_files)} image(s) to process")
 # camera intrinsics (fx, fy, cx, cy) from calibration
 # Will be calibrated using reference images
 fx, fy, cx, cy = 1000, 1000, 320, 240  # Initial placeholder values
-tag_size_m = 0.168  # real tag side length in meters
 
 # Manual calibration data from known distances and actual measurements
+# Format: (pixel_size, distance_m, tag_size_m)
 # All calibration data extracted from reference images
 calibration_data = [
-    (267.1, 6.00),   # 6 meter nieuwe lens.jpg: 267.1px at 6.00m
-    (242.0, 6.50),     # 6.5 meter nieuwe lens.jpg: 242px at 6.50m
-    (224.0, 7.00),     # 7 meter nieuwe lens.jpg: 224px at 7.00m
+    (267.1, 6.00, 0.168),       # 6.00m: 267.1px, 0.168m tag
+    (242.0, 6.50, 0.168),       # 6.50m: 242.0px, 0.168m tag
+    (224.0, 7.00, 0.168),       # 7.00m: 224.0px, 0.168m tag
+    (469.8, 80.10, 4.0),        # 80.10m: 469.8px, 4.0m tag (Final Apriltag 1.jpg)
 ]
 
-# Create calibration curve using the actual measurement data
-pixel_sizes = np.array([d[0] for d in calibration_data])
-distances = np.array([d[1] for d in calibration_data])
+# Calculate calibration constant: focal_length = (pixel_size * distance) / tag_size
+focal_lengths = np.array([(d[0] * d[1]) / d[2] for d in calibration_data])
+focal_length = np.mean(focal_lengths)
 
-# Calculate calibration constant: k = pixel_size * distance
-k_values = pixel_sizes * distances
-k = np.mean(k_values)
+print(f"Calibration using multi-distance, multi-size reference data:")
+print(f"Focal length constant: {focal_length:.1f}")
+print(f"Standard deviation: {np.std(focal_lengths):.1f}")
+print(f"Coefficient of variation: {np.std(focal_lengths) / focal_length * 100:.2f}%\n")
 
-print(f"Calibration using new lens reference data:")
-for px, dist in calibration_data:
-    print(f"  {dist:.2f}m: {px:.1f}px => k = {px * dist:.1f}")
-print(f"  Average calibration constant k: {k:.1f}")
+print("Calibration data:")
+for px, dist, tag_size in calibration_data:
+    fl = (px * dist) / tag_size
+    print(f"  {dist:.2f}m: {px:.1f}px, {tag_size:.3f}m tag => fl = {fl:.1f}")
 
 print("\nCalibration verification:")
-for px, actual_dist in calibration_data:
-    calc_dist = k / px
+for px, actual_dist, tag_size in calibration_data:
+    calc_dist = (focal_length * tag_size) / px
     error_m = calc_dist - actual_dist
     error_pct = (error_m / actual_dist) * 100
-    print(f"    {actual_dist:.2f}m: {calc_dist:.2f}m (error: {error_m:+.2f}m, {error_pct:+.1f}%)")
-
-objp = np.array([[-tag_size_m/2, -tag_size_m/2, 0],
-                 [ tag_size_m/2, -tag_size_m/2, 0],
-                 [ tag_size_m/2,  tag_size_m/2, 0],
-                 [-tag_size_m/2,  tag_size_m/2, 0]], dtype=float)
+    print(f"  {actual_dist:.2f}m: {calc_dist:.2f}m (error: {error_m:+.3f}m, {error_pct:+.2f}%)")
 
 # Process each image
 print("\nProcessing all images...")
@@ -138,8 +135,21 @@ for img_path in image_files:
 
     print(f"  Using {len(unique_results)} unique tag(s) after deduplication")
 
+    # Tag size maps (meters)
+    tag_size_map = {
+        'Final Apriltag 1.jpg': 4.0,  # 4x4 meter tag by filename
+    }
+    tag_size_by_id = {
+        317: 1.0,  # AprilTag ID 317 is a 1 meter tag
+    }
+    
+    # Default tag size for this image when no tag ID override matches
+    default_tag_size_m = tag_size_map.get(img_path.name, 4.0)
+
     for r in unique_results:
         corners = np.array(r.corners, dtype=float)
+        tag_size_m = tag_size_by_id.get(r.tag_id, default_tag_size_m)
+        print(f"    Tag ID {r.tag_id} size: {tag_size_m:.2f}m")
         
         # Calculate all 4 sides for angle detection
         side1 = np.linalg.norm(corners[1] - corners[0])
@@ -152,12 +162,9 @@ for img_path in image_files:
         # Get max side for distance calculation
         max_side = np.max(sides)
         
-        # Nominal tag size
-        tag_size_cm = 16.8  # AprilTag side in cm
-        
-        # Calculate distance to tag using calibration constant
-        # distance_m = k / pixel_size
-        distance_m = k / max_side if max_side > 0 else 0
+        # Calculate distance to tag using calibration formula
+        # distance = (focal_length * tag_size) / pixel_size
+        distance_m = (focal_length * tag_size_m) / max_side if max_side > 0 else 0
         
         # Calculate distance from camera center to tag center
         tag_center = np.mean(corners, axis=0)
@@ -197,17 +204,13 @@ for img_path in image_files:
     cv2.imwrite(str(output_path), img_color)
     print(f"  Saved to: {output_path}")
     
-    # Display the image with overlays (resized for better viewing) with properly scaled coordinates
-    original_h, original_w = img_color.shape[:2]
-    display_size = (1200, 900)
-    scale_x = display_size[0] / original_w
-    scale_y = display_size[1] / original_h
+    # Add detailed overlays to the full-resolution image
+    full_display_img = img_color.copy()
     
-    display_img = cv2.resize(img_color, display_size)
-    
-    # Redraw everything with scaled coordinates on the resized image
+    # Draw detailed overlays on full-resolution image
     for r in unique_results:
         corners = np.array(r.corners, dtype=float)
+        tag_size_m = tag_size_by_id.get(r.tag_id, default_tag_size_m)
         
         # Calculate all 4 sides for angle detection
         side1 = np.linalg.norm(corners[1] - corners[0])
@@ -216,53 +219,62 @@ for img_path in image_files:
         side4 = np.linalg.norm(corners[0] - corners[3])
         max_side = np.max([side1, side2, side3, side4])
         
-        # Calculate distance using the measured side length and calibration constant
-        tag_size_cm = 16.8  # AprilTag side in cm
-        distance_m = k / max_side if max_side > 0 else 0
+        # Calculate distance using the measured side length and focal_length calibration
+        distance_m = (focal_length * tag_size_m) / max_side if max_side > 0 else 0
         
-        # Scale coordinates
-        corners_scaled = corners * np.array([scale_x, scale_y])
+        # Use original coordinates (no scaling needed for full resolution)
         tag_center = np.mean(corners, axis=0)
-        center_scaled = tag_center * np.array([scale_x, scale_y])
-        camera_center_scaled = np.array([cx_actual, cy_actual]) * np.array([scale_x, scale_y])
+        camera_center = np.array([cx_actual, cy_actual])
         
-        # Draw tag corners on resized image
-        corners_int = corners_scaled.astype(int)
-        cv2.polylines(display_img, [corners_int], True, (0, 255, 0), 2)
+        # Draw tag corners on full-resolution image
+        corners_int = corners.astype(int)
+        cv2.polylines(full_display_img, [corners_int], True, (0, 255, 0), 3)  # Thicker lines for visibility
         
         # Draw tag center
-        center_int = center_scaled.astype(int)
-        cv2.circle(display_img, tuple(center_int), 5, (0, 0, 255), -1)
-        cv2.putText(display_img, f"ID: {r.tag_id}", tuple(center_int + np.array([10, -10])),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        center_int = tag_center.astype(int)
+        cv2.circle(full_display_img, tuple(center_int), 8, (0, 0, 255), -1)  # Larger circle
+        cv2.putText(full_display_img, f"ID: {r.tag_id}", tuple(center_int + np.array([15, -15])),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)  # Larger text
         
-        # Draw camera center (now correctly positioned on resized image)
-        camera_center_int = camera_center_scaled.astype(int)
-        cv2.circle(display_img, tuple(camera_center_int), 5, (255, 0, 0), -1)
-        cv2.putText(display_img, "Camera Center", tuple(camera_center_int + np.array([10, -10])),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        # Draw camera center
+        camera_center_int = camera_center.astype(int)
+        cv2.circle(full_display_img, tuple(camera_center_int), 8, (255, 0, 0), -1)  # Larger circle
+        cv2.putText(full_display_img, "Camera Center", tuple(camera_center_int + np.array([15, -15])),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)  # Larger text
         
         # Draw line from camera center to tag center
-        cv2.line(display_img, tuple(camera_center_int), tuple(center_int), (200, 200, 0), 2)
+        cv2.line(full_display_img, tuple(camera_center_int), tuple(center_int), (200, 200, 0), 3)  # Thicker line
         
         # Calculate distances
-        camera_center_orig = np.array([cx_actual, cy_actual])
         dist_px, dist_3d_m, off_x_px, off_y_px, off_x_m, off_y_m = calculate_center_distance(
-            tag_center, camera_center_orig, cx_actual, cy_actual, fx, fy, distance_m, max_side=max_side
+            tag_center, camera_center, cx_actual, cy_actual, fx, fy, distance_m, max_side=max_side
         )
         
         # Calculate actual distance using Pythagorean theorem
+        offset_in_plane = np.sqrt(off_x_m**2 + off_y_m**2)
         actual_distance_m = np.sqrt(distance_m**2 - offset_in_plane**2) if distance_m**2 >= offset_in_plane**2 else 0
         
-        # Draw distance info
-        cv2.putText(display_img, f"Dist (plane): {distance_m:.2f}m", tuple(center_int + np.array([10, 15])),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-        cv2.putText(display_img, f"Size: {max_side:.0f}px (16.8cm)", tuple(center_int + np.array([10, 35])),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.putText(display_img, f"Center dist: {actual_distance_m:.3f}m ({dist_px:.0f}px)", 
-                   tuple(center_int + np.array([10, 55])),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 0), 2)
+        # Draw distance info with larger, more visible text
+        cv2.putText(full_display_img, f"DISTANCE: {distance_m:.2f}m", tuple(center_int + np.array([15, 25])),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 3)  # Large red text for distance
+        cv2.putText(full_display_img, f"Tag Size: {tag_size_m:.2f}m", tuple(center_int + np.array([15, 60])),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+        cv2.putText(full_display_img, f"REAL ALTITUDE: {actual_distance_m:.2f}m", 
+                   tuple(center_int + np.array([15, 90])),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)  # Green text for real altitude
     
-    cv2.imshow(f"Tags: {img_path.name}", display_img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # Save the full-resolution image with detailed overlays
+    full_display_path = output_folder / f"full_display_{img_path.name}"
+    cv2.imwrite(str(full_display_path), full_display_img)
+    print(f"  Saved full-resolution display to: {full_display_path}")
+    
+    # Also save the resized version for reference
+    original_h, original_w = img_color.shape[:2]
+    display_size = (1200, 900)
+    scale_x = display_size[0] / original_w
+    scale_y = display_size[1] / original_h
+    
+    display_img = cv2.resize(full_display_img, display_size)
+    display_output_path = output_folder / f"display_{img_path.name}"
+    cv2.imwrite(str(display_output_path), display_img)
+    print(f"  Saved resized display to: {display_output_path}")
